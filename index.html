@@ -3,8 +3,8 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Syscoin OP_RETURN Block Finder — v6.4 (pools + logos)</title>
-  <meta name="description" content="Scan recent Bitcoin blocks for OP_RETURN or coinbase scriptSig patterns. Shows pool names & logos. Syscoin is merge-mined with Bitcoin." />
+  <title>Syscoin OP_RETURN Block Finder — v6.5 (latest-first + stronger pools)</title>
+  <meta name="description" content="Scan recent Bitcoin blocks for OP_RETURN or coinbase ScriptSig patterns. Shows pool names & logos. Syscoin is merge-mined with Bitcoin." />
   <meta name="theme-color" content="#0b0c0f" />
   <style>
     :root{--bg:#0b0c0f;--panel:#101114;--muted:#a1a1aa;--line:#232327;--accent:#22c55e;--accent-2:#16a34a;--text:#fafafa}
@@ -92,7 +92,7 @@
     <section class="card" id="poolsCard">
       <div class="row wrap" style="justify-content:space-between">
         <h3 style="margin:0">Pools (this session)</h3>
-        <div class="muted" style="font-size:12px">Detected via mempool tags / payout addresses / API extras</div>
+        <div class="muted" style="font-size:12px">Detected via mempool extras / coinbase tags / payout addresses</div>
       </div>
       <div id="poolsBox" class="pools" style="margin-top:10px"></div>
     </section>
@@ -105,7 +105,7 @@
     </section>
 
     <footer>
-      Data sources: Esplora APIs for Bitcoin (mempool.space, blockstream.info); public mining-pool mappings (GitHub) for pool names & logos; Chainz (cryptoid) for Syscoin hashrate. Syscoin is merge-mined with Bitcoin, so the Bitcoin pool here is the corresponding miner.
+      Data sources: Esplora APIs (mempool.space, blockstream.info); mining-pool mappings (GitHub) for pool names & logos; Chainz for Syscoin hashrate.
     </footer>
   </main>
 
@@ -115,6 +115,7 @@
       "https://mempool.space/api",
       "https://blockstream.info/api"
     ];
+    const MEMPOOL_API = "https://mempool.space/api"; // used as fallback for pool extras
     const POOLS_JSON_URL = "https://raw.githubusercontent.com/mempool/mining-pools/master/pools-v2.json";
     const POOL_LOGO_BASE = "https://raw.githubusercontent.com/mempool/mining-pool-logos/master";
     const SYSCOIN_HASHRATE_URL = "https://chainz.cryptoid.info/sys/api.dws?q=nethashps"; // H/s plain text
@@ -139,7 +140,6 @@
     const elLastUpdate = $('lastUpdate');
     const elPoolsBox = $('poolsBox');
 
-    // Defaults: ASCII "sys"
     const DEFAULT_ASCII = "sys";
 
     // --- Helpers ---
@@ -182,12 +182,11 @@
     }
     function api(path){ if(!BTC_API_BASE) throw new Error('Esplora base not set'); return BTC_API_BASE + path; }
 
-    // ---- OP_RETURN parsing (robust: handles PUSHDATA1/2/4 & multi-push) ----
+    // ---- OP_RETURN parsing ----
     function readLE(hex, off, bytes){
       var v = 0; for(var i=0;i<bytes;i++){ v |= parseInt(hex.substr(off + i*2, 2), 16) << (8*i); } return v;
     }
     function extractOpReturnFromHexScript(scriptHex){
-      // Returns concatenated pushdata after OP_RETURN; supports OP_PUSHDATA{1,2,4} and multiple pushes
       if(!scriptHex) return null;
       var h = scriptHex.toLowerCase().replace(/[^0-9a-f]/g,'');
       var i = 0; var out = '';
@@ -195,17 +194,16 @@
       while(i < h.length){
         var op = readByte();
         if (op === 0x6a){ // OP_RETURN
-          // read subsequent pushes until script end
           while(i < h.length){
             var b = parseInt(h.substr(i,2),16);
             if (Number.isNaN(b)) break;
-            if (b >= 1 && b <= 75){ // small push
+            if (b >= 1 && b <= 75){
               i += 2; var len = b; out += h.substr(i, len*2); i += len*2; continue;
-            } else if (b === 0x4c){ // PUSHDATA1
+            } else if (b === 0x4c){
               i += 2; var len1 = parseInt(h.substr(i,2),16); i += 2; out += h.substr(i, len1*2); i += len1*2; continue;
-            } else if (b === 0x4d){ // PUSHDATA2
+            } else if (b === 0x4d){
               i += 2; var len2 = readLE(h, i, 2); i += 4; out += h.substr(i, len2*2); i += len2*2; continue;
-            } else if (b === 0x4e){ // PUSHDATA4
+            } else if (b === 0x4e){
               i += 2; var len4 = readLE(h, i, 4); i += 8; out += h.substr(i, len4*2); i += len4*2; continue;
             } else { break; }
           }
@@ -215,7 +213,6 @@
       return null;
     }
     function extractOpReturnHex(voutAsm, voutHex){
-      // ASM path joins hex tokens; hex path decodes PUSHDATA opcodes
       if (voutAsm && voutAsm.indexOf('OP_RETURN')===0){
         var parts = voutAsm.trim().split(/\s+/);
         var hexParts = parts.slice(1).filter(function(p){ return /^[0-9a-fA-F]+$/.test(p); });
@@ -224,7 +221,6 @@
       if (voutHex){ return extractOpReturnFromHexScript(voutHex); }
       return null;
     }
-    // Search a tx for first OP_RETURN payload that matches pattern
     function extractFirstMatchingFromTx(tx, pattern){
       if (!tx || !Array.isArray(tx.vout)) return null;
       for (var i=0;i<tx.vout.length;i++){
@@ -239,7 +235,7 @@
       return null;
     }
 
-    // Build pattern; support '?' as one-byte wildcard when enabled
+    // --- Pattern building ---
     function buildHexPattern(){
       var asciiOn = !!elUseAscii.checked;
       var wildcardOn = !!elUseWildcard.checked;
@@ -260,11 +256,11 @@
     }
     function hexIncludes(targetHex, pattern){ var t=String(targetHex||'').toLowerCase(); if(!t) return false; return pattern.isRegex ? pattern.re.test(t) : t.indexOf(pattern.hex) !== -1; }
 
-    // Pools
+    // --- Pools metadata & detection ---
     var POOLS=null;
     async function loadPools(){
       try{
-        var json = await fetchJSON(POOLS_JSON_URL, { cache: 'force-cache', timeout: 15000 });
+        var json = await fetchJSON(POOLS_JSON_URL, { cache: 'no-store', timeout: 15000 });
         var coinbaseTags=[]; var payoutAddresses=new Map(); var slugsByName=new Map();
         if (json.coinbase_tags){ for (var kv of Object.entries(json.coinbase_tags)){ var pattern=kv[0], v=kv[1]; coinbaseTags.push({pattern:pattern, name:v.name, link:v.link}); } }
         if (json.payout_addresses){ for (var kv2 of Object.entries(json.payout_addresses)){ var addr=kv2[0], v2=kv2[1]; payoutAddresses.set(addr,{name:v2.name, link:v2.link}); } }
@@ -274,57 +270,101 @@
         POOLS = { coinbaseTags: coinbaseTags, payoutAddresses: payoutAddresses, slugsByName: slugsByName };
       }catch(e){ POOLS = { coinbaseTags: [], payoutAddresses: new Map(), slugsByName: new Map() }; }
     }
-    function detectPool(coinbaseTx, fallbackExtras){
-      if(!POOLS) return fallbackExtras || undefined;
-      var ssHex = (coinbaseTx && coinbaseTx.vin && coinbaseTx.vin[0] && coinbaseTx.vin[0].scriptsig) || '';
-      var ascii = hexToAscii(ssHex);
-      // Try extras from API first
-      if (fallbackExtras && (fallbackExtras.name || fallbackExtras.slug)){
-        return fallbackExtras;
+
+    // Extra safety: hard-coded fallbacks for common coinbase tags
+    const FALLBACK_TAGS = [
+      { re: /(foundry|foundryusa)/i, name: "Foundry USA", slug: "foundryusa", link: "https://foundrydigital.com" },
+      { re: /(antpool)/i,              name: "AntPool",     slug: "antpool",     link: "https://www.antpool.com" },
+      { re: /(f2pool)/i,               name: "F2Pool",      slug: "f2pool",      link: "https://www.f2pool.com" },
+      { re: /(viabtc)/i,               name: "ViaBTC",      slug: "viabtc",      link: "https://www.viabtc.com" },
+      { re: /(binance.*pool|bnbpool)/i,name: "Binance Pool",slug: "binance",     link: "https://pool.binance.com" },
+      { re: /(btc\\.com|btccom)/i,     name: "BTC.com",     slug: "btccom",      link: "https://pool.btc.com" },
+      { re: /(luxor)/i,                name: "Luxor",       slug: "luxor",       link: "https://mining.luxor.tech" },
+      { re: /(sbi.*crypto)/i,          name: "SBI Crypto",  slug: "sbicrypto",   link: "https://www.sbicrypto.com" },
+      { re: /(mara|marapool)/i,        name: "MARA Pool",   slug: "marathon",    link: "https://www.mara.xyz" }
+    ];
+
+    function matchFallbackTag(ascii){
+      for (const t of FALLBACK_TAGS){
+        if (t.re.test(ascii)) return { name: t.name, slug: t.slug, link: t.link };
       }
-      // Regex over coinbase tags
-      for (var i=0;i<POOLS.coinbaseTags.length;i++){
-        var entry = POOLS.coinbaseTags[i];
-        try{ var re = new RegExp(entry.pattern,'i'); if (re.test(ascii)) return {name:entry.name,link:entry.link,slug:entry.slug}; }
-        catch(e){ if (ascii.toLowerCase().indexOf(String(entry.pattern).toLowerCase()) !== -1) return {name:entry.name,link:entry.link,slug:entry.slug}; }
-      }
-      // Payout address heuristics
-      if (coinbaseTx && Array.isArray(coinbaseTx.vout)){
-        for (var j=0;j<coinbaseTx.vout.length;j++){
-          var addr = coinbaseTx.vout[j] && coinbaseTx.vout[j].scriptpubkey_address;
-          if (addr && POOLS.payoutAddresses && POOLS.payoutAddresses.has(addr)){
-            return POOLS.payoutAddresses.get(addr);
-          }
-        }
-      }
-      return fallbackExtras || undefined;
+      return undefined;
     }
 
-    // Esplora helpers
-    var cursorHeight = null; // for paging backward
-    async function fetchBlocksPage(){
-      var arr = await fetchJSON(api("/blocks"));
-      if (arr && arr.length){ cursorHeight = arr[arr.length-1].height - 1; }
-      return arr || [];
+    function detectPoolFromTags(ascii){
+      if (!POOLS) return undefined;
+      // try official mempool coinbase tag regexes
+      for (var i=0;i<POOLS.coinbaseTags.length;i++){
+        var entry = POOLS.coinbaseTags[i];
+        try{
+          var re = new RegExp(entry.pattern,'i');
+          if (re.test(ascii)) return {name:entry.name,link:entry.link,slug:entry.slug};
+        }catch(e){
+          if (ascii.toLowerCase().indexOf(String(entry.pattern).toLowerCase()) !== -1)
+            return {name:entry.name,link:entry.link,slug:entry.slug};
+        }
+      }
+      // hard-coded fallbacks
+      return matchFallbackTag(ascii);
     }
-    async function fetchBlocksPageFrom(height){
-      var arr = await fetchJSON(api("/blocks/"+height));
-      if (arr && arr.length){ cursorHeight = arr[arr.length-1].height - 1; }
-      return arr || [];
+
+    function detectPoolFromPayouts(coinbaseTx){
+      if (!POOLS || !coinbaseTx || !Array.isArray(coinbaseTx.vout)) return undefined;
+      for (var j=0;j<coinbaseTx.vout.length;j++){
+        var addr = coinbaseTx.vout[j] && coinbaseTx.vout[j].scriptpubkey_address;
+        if (addr && POOLS.payoutAddresses && POOLS.payoutAddresses.has(addr)){
+          return POOLS.payoutAddresses.get(addr);
+        }
+      }
+      return undefined;
     }
-    async function fetchTipBlocks(){
-      return await fetchJSON(api("/blocks"));
+
+    // ---- Extras: try current API, then mempool.space fallback ----
+    async function getBlockExtras(blockHash){
+      // first: chosen base (may be blockstream, which usually has no extras)
+      try{
+        var b = await fetchJSON(api("/block/"+blockHash));
+        if (b && b.extras && b.extras.pool){
+          return { name: b.extras.pool.name, link: b.extras.pool.link, slug: b.extras.pool.slug };
+        }
+      }catch(e){}
+      // fallback: hit mempool.space directly for extras
+      try{
+        var b2 = await fetchJSON(MEMPOOL_API + "/block/" + blockHash);
+        if (b2 && b2.extras && b2.extras.pool){
+          return { name: b2.extras.pool.name, link: b2.extras.pool.link, slug: b2.extras.pool.slug };
+        }
+      }catch(e){}
+      return null;
     }
+
+    function detectPool(coinbaseTx, fallbackExtras){
+      // prefer extras if present
+      if (fallbackExtras && (fallbackExtras.name || fallbackExtras.slug)) return fallbackExtras;
+
+      // then coinbase ascii tag
+      var ssHex = (coinbaseTx && coinbaseTx.vin && coinbaseTx.vin[0] && coinbaseTx.vin[0].scriptsig) || '';
+      var ascii = hexToAscii(ssHex || '');
+      var byTag = detectPoolFromTags(ascii);
+      if (byTag) return byTag;
+
+      // then payout addresses
+      var byPay = detectPoolFromPayouts(coinbaseTx);
+      if (byPay) return byPay;
+
+      return undefined;
+    }
+
+    // --- Esplora helpers ---
+    async function fetchBlocksPage(){ return await fetchJSON(api("/blocks")); }
+    async function fetchBlocksPageFrom(height){ return await fetchJSON(api("/blocks/"+height)); }
+    async function fetchTipBlocks(){ return await fetchJSON(api("/blocks")); }
     async function getCoinbaseTx(blockHash){
       var page = await fetchJSON(api("/block/"+blockHash+"/txs/0"));
       return (page && page[0]) || null;
     }
-    async function getBlockExtras(blockHash){
-      try{ var b = await fetchJSON(api("/block/"+blockHash)); return (b && b.extras && b.extras.pool) ? {name:b.extras.pool.name, link:b.extras.pool.link, slug:b.extras.pool.slug} : null; }
-      catch(e){ return null; }
-    }
 
-    // Render helpers
+    // --- Rendering ---
     function poolLogoUrl(slug){ return slug ? (POOL_LOGO_BASE+"/"+slug+".svg") : (POOL_LOGO_BASE+"/default.svg"); }
 
     // Session pool counts
@@ -349,21 +389,55 @@
         </div>`).join('');
     }
 
-    function renderItemPrepend(row){
+    function renderItemCard(row){
       var b = row.block; var pool=row.pool||{name:'Unknown'}; var when=new Date(b.timestamp*1000);
       var logo = poolLogoUrl(pool.slug);
       var where = row.matchedWhere || 'OP_RETURN';
       var opAscii = row.matchedDataHex ? hexToAscii(row.matchedDataHex) : '';
       var div = document.createElement('div'); div.className='item';
-      div.innerHTML = '\n        <div class="logo"><img alt="'+(pool.name||'Pool')+'" src="'+logo+'" onerror="this.src=\''+POOL_LOGO_BASE+'/default.svg\'" crossOrigin="anonymous"/></div>\n        <div style="flex:1;min-width:0">\n          <div class="row wrap" style="gap:8px">\n            <span class="pill mono">MATCH · '+where+'</span>\n            <a class="mono" href="https://mempool.space/block/'+b.id+'" target="_blank">'+b.height+' · '+shortHash(b.id)+'</a>\n            <span class="muted">'+when.toLocaleString()+'</span>\n          </div>\n          <div class="muted" style="margin-top:4px;font-size:14px">Pool: <span style="color:#e5e7eb">'+(pool.name||'Unknown')+'</span> '+(pool.link ? '· <a href="'+pool.link+'" target="_blank">website</a>' : '')+'</div>\n          '+(row.matchedDataHex ? ('\n            <div class="mono" style="margin-top:6px;font-size:12px;word-break:break-all">\n              <div class="muted">Matched bytes (hex):</div>\n              <div>'+row.matchedDataHex+'</div>\n              <div class="muted" style="margin-top:4px">As ASCII (non-printables as .):</div>\n              <div>'+opAscii+'</div>\n            </div>') : '')+'\n        </div>\n        <div style="text-align:right;font-size:12px">\n          <div class="muted">Matched tx</div>\n          <a class="mono" href="https://mempool.space/tx/'+row.matchedTxid+'" target="_blank">'+shortHash(row.matchedTxid)+'</a>\n          '+(row.coinbaseTxid && row.coinbaseTxid!==row.matchedTxid ? ('<div class="muted" style="margin-top:6px">Coinbase tx</div><a class="mono" href="https://mempool.space/tx/'+row.coinbaseTxid+'" target="_blank">'+shortHash(row.coinbaseTxid)+'</a>') : '')+'\n        </div>';
-      if (elList.firstChild){ elList.insertBefore(div, elList.firstChild); } else { elList.appendChild(div); }
-      while (elList.childElementCount > 50){ elList.removeChild(elList.lastChild); }
-
-      // Update pools summary
-      incrPoolCount(pool);
+      div.innerHTML = `
+        <div class="logo"><img alt="${pool.name||'Pool'}" src="${logo}" onerror="this.src='${POOL_LOGO_BASE}/default.svg'" crossOrigin="anonymous"/></div>
+        <div style="flex:1;min-width:0">
+          <div class="row wrap" style="gap:8px">
+            <span class="pill mono">MATCH · ${where}</span>
+            <a class="mono" href="https://mempool.space/block/${b.id}" target="_blank">${b.height} · ${shortHash(b.id)}</a>
+            <span class="muted">${when.toLocaleString()}</span>
+          </div>
+          <div class="muted" style="margin-top:4px;font-size:14px">Pool:
+            <span style="color:#e5e7eb">${pool.name||'Unknown'}</span>
+            ${pool.link ? `· <a href="${pool.link}" target="_blank">website</a>` : ''}
+          </div>
+          ${row.matchedDataHex ? (`
+            <div class="mono" style="margin-top:6px;font-size:12px;word-break:break-all">
+              <div class="muted">Matched bytes (hex):</div>
+              <div>${row.matchedDataHex}</div>
+              <div class="muted" style="margin-top:4px">As ASCII (non-printables as .):</div>
+              <div>${opAscii}</div>
+            </div>`) : ''}
+        </div>
+        <div style="text-align:right;font-size:12px">
+          <div class="muted">Matched tx</div>
+          <a class="mono" href="https://mempool.space/tx/${row.matchedTxid}" target="_blank">${shortHash(row.matchedTxid)}</a>
+          ${(row.coinbaseTxid && row.coinbaseTxid!==row.matchedTxid) ? (`<div class="muted" style="margin-top:6px">Coinbase tx</div><a class="mono" href="https://mempool.space/tx/${row.coinbaseTxid}" target="_blank">${shortHash(row.coinbaseTxid)}</a>`) : ''}
+        </div>`;
+      return div;
     }
 
-    // Logic
+    // NEW: append vs prepend helpers
+    function renderItemAppend(row){
+      const node = renderItemCard(row);
+      elList.appendChild(node);
+      while (elList.childElementCount > 50){ elList.removeChild(elList.firstChild); } // keep newest at top, drop oldest
+      incrPoolCount(row.pool);
+    }
+    function renderItemPrepend(row){
+      const node = renderItemCard(row);
+      if (elList.firstChild){ elList.insertBefore(node, elList.firstChild); } else { elList.appendChild(node); }
+      while (elList.childElementCount > 50){ elList.removeChild(elList.lastChild); }
+      incrPoolCount(row.pool);
+    }
+
+    // --- Logic ---
     var blocksChecked=0; var txChecked=0; var matchesCount=0; var processedBlocks=new Set();
     function setError(msg){ elError.style.display = msg? 'block':'none'; elError.textContent = msg||''; }
     function renderCounters(){ elBlocksChecked.textContent=String(blocksChecked); elTxChecked.textContent=String(txChecked); elMatches.textContent=String(matchesCount); elLastUpdate.textContent=nowStr(); }
@@ -373,14 +447,18 @@
       try{ extras = await getBlockExtras(block.id); }catch(e){}
       try{ coinbase = await getCoinbaseTx(block.id); }catch(e){}
       blocksChecked++;
+
       if (coinbase){
         var cbMatch = extractFirstMatchingFromTx(coinbase, pattern);
-        if (cbMatch){ return { matchedTxid: coinbase.txid, matchedWhere: cbMatch.where, matchedDataHex: cbMatch.dataHex, coinbaseTxid: coinbase.txid, pool: detectPool(coinbase, extras) }; }
+        if (cbMatch){
+          return { matchedTxid: coinbase.txid, matchedWhere: cbMatch.where, matchedDataHex: cbMatch.dataHex, coinbaseTxid: coinbase.txid, pool: detectPool(coinbase, extras) };
+        }
         var ssHex = (coinbase && coinbase.vin && coinbase.vin[0] && coinbase.vin[0].scriptsig) || '';
         if (ssHex && hexIncludes(ssHex, pattern)){
           return { matchedTxid: coinbase.txid, matchedWhere: 'scriptSig', matchedDataHex: ssHex, coinbaseTxid: coinbase.txid, pool: detectPool(coinbase, extras) };
         }
       }
+
       var page = 0;
       while (true){
         let txs=null; try{ txs = await fetchJSON(api("/block/"+block.id+"/txs/"+page)); }catch(e){ break; }
@@ -389,26 +467,36 @@
         for (var i=0;i<txs.length;i++){
           var tx = txs[i];
           var match = extractFirstMatchingFromTx(tx, pattern);
-          if (match){ return { matchedTxid: tx.txid, matchedWhere: match.where, matchedDataHex: match.dataHex, coinbaseTxid: (coinbase && coinbase.txid) || null, pool: detectPool(coinbase, extras) }; }
+          if (match){
+            return { matchedTxid: tx.txid, matchedWhere: match.where, matchedDataHex: match.dataHex, coinbaseTxid: (coinbase && coinbase.txid) || null, pool: detectPool(coinbase, extras) };
+          }
         }
         page++; if (page>80) break; await sleep(10);
       }
       return null;
     }
 
+    // NOTE: Initial fill scans newest->older pages, but now we APPEND matches to keep "latest first"
     async function initialFill(target){
       var pat = buildHexPattern();
       var found = 0;
       let page = await fetchBlocksPage();
-      if (!page.length) return;
+      if (!page || !page.length) return;
       let nextHeight = page[page.length-1].height - 1;
+
       while (found < target){
+        // page is newest -> older; appending preserves latest-first at top
         for (var i=0;i<page.length;i++){
           var b = page[i];
           if (processedBlocks.has(b.id)) continue;
           processedBlocks.add(b.id);
-          try{ var res = await extractMatchFromBlock(b, pat); if (res){ matchesCount++; found++; renderItemPrepend({ block:b, matchedTxid:res.matchedTxid, matchedWhere:res.matchedWhere, matchedDataHex:res.matchedDataHex, coinbaseTxid:res.coinbaseTxid, pool: res.pool }); } }
-          catch(e){ /* ignore per-block */ }
+          try{
+            var res = await extractMatchFromBlock(b, pat);
+            if (res){
+              matchesCount++; found++;
+              renderItemAppend({ block:b, matchedTxid:res.matchedTxid, matchedWhere:res.matchedWhere, matchedDataHex:res.matchedDataHex, coinbaseTxid:res.coinbaseTxid, pool: res.pool });
+            }
+          }catch(e){}
           renderCounters();
           if (found >= target) break;
           await sleep(15);
@@ -420,6 +508,7 @@
       }
     }
 
+    // Poll new: walk oldest->newest and PREPEND so the newest block lands on top
     async function pollNew(){
       var pat = buildHexPattern();
       try{
@@ -428,15 +517,20 @@
           var b = latest[i];
           if (processedBlocks.has(b.id)) continue;
           processedBlocks.add(b.id);
-          try{ var res = await extractMatchFromBlock(b, pat); if (res){ matchesCount++; renderItemPrepend({ block:b, matchedTxid:res.matchedTxid, matchedWhere:res.matchedWhere, matchedDataHex:res.matchedDataHex, coinbaseTxid:res.coinbaseTxid, pool: res.pool }); } }
-          catch(e){ /* ignore */ }
+          try{
+            var res = await extractMatchFromBlock(b, pat);
+            if (res){
+              matchesCount++;
+              renderItemPrepend({ block:b, matchedTxid:res.matchedTxid, matchedWhere:res.matchedWhere, matchedDataHex:res.matchedDataHex, coinbaseTxid:res.coinbaseTxid, pool: res.pool });
+            }
+          }catch(e){}
           renderCounters();
           await sleep(25);
         }
       }catch(e){ setError('Polling error: '+e.message); }
     }
 
-    // --- Self tests + smoke tests against 3 block hashes ---
+    // --- Self tests (unchanged) ---
     function addTestResult(ok, msg){ elTestsBox.style.display = 'block'; var li = document.createElement('li'); li.className = ok ? 'ok' : 'fail'; li.textContent = (ok ? '✓ ' : '✗ ') + msg; elTests.appendChild(li); }
     async function runTests(){
       try{
@@ -449,13 +543,12 @@
         elUseAscii.checked = true; elUseWildcard.checked = false; elAsciiInput.value = 'sys'; var pA = buildHexPattern(); addTestResult(pA.hex === '737973', 'ASCII sys → hex'); addTestResult(hexIncludes('00737973ff', pA) === true, 'includes sys');
         var fakeTx1 = { vout:[{scriptpubkey_type:'op_return', scriptpubkey_asm:'OP_RETURN 7379736f6d65', scriptpubkey:'6a057379736f6d65'}] };
         addTestResult(!!extractFirstMatchingFromTx(fakeTx1, {isRegex:false,re:null,hex:'737973'}), 'extractFirstMatchingFromTx finds sys (ASM)');
-        var fakeTx2 = { vout:[{scriptpubkey_type:'op_return', scriptpubkey:'6a0373797a'}] }; // 'sy' + any byte
+        var fakeTx2 = { vout:[{scriptpubkey_type:'op_return', scriptpubkey:'6a0373797a'}] };
         addTestResult(!!extractFirstMatchingFromTx(fakeTx2, {isRegex:true,re:new RegExp('7379[0-9a-f]{2}'),hex:'7379??'}), 'extractFirstMatchingFromTx wildcard 1 byte');
         var fakeTx3 = { vout:[{scriptpubkey_type:'op_return', scriptpubkey_asm:'OP_RETURN 7379 73', scriptpubkey:null}] };
         addTestResult(!!extractFirstMatchingFromTx(fakeTx3, {isRegex:false,re:null,hex:'737973'}), 'ASM multi-push join matches');
       }catch(e){ addTestResult(false, 'Tests threw: '+e); }
 
-      // Smoke against known block hashes (if API reachable)
       try{
         if(!BTC_API_BASE) return;
         var pat = { re: null, isRegex: false, hex: '737973' }; // "sys"
@@ -472,7 +565,7 @@
       }catch(e){ addTestResult(false, 'smoke tests skipped/failed: '+e.message); }
     }
 
-    // Boot
+    // --- Boot ---
     (async function init(){
       // Defaults
       elAsciiInput.value = DEFAULT_ASCII; elAsciiAsHex.textContent = asciiToHex(DEFAULT_ASCII);
@@ -482,16 +575,19 @@
       try{ var t = await fetchTEXT(SYSCOIN_HASHRATE_URL,{ cache:'no-store', timeout: 8000 }); var n = Number((t||'').trim()); elHashrate.textContent = (Number.isFinite(n)?formatHps(n):'–'); }catch(e){}
       try{ await loadPools(); } catch(e){ setError('Pool metadata failed to load — logos/names may be missing.'); }
       await runTests();
-      // Initial fill to 50, then poll tip every 30s
+
+      // Initial fill to 50 (APPEND results so the newest stays at the top)
       try{ await initialFill(50); }catch(e){ setError('Initial scan failed: '+e.message); }
       renderCounters();
+
+      // Poll tip every 30s (PREPEND new matches so newest appears on top)
       setInterval(pollNew, 30000);
 
-      // Update HEX preview on input
+      // Input wiring
       elAsciiInput.addEventListener('input', function(){ elAsciiAsHex.textContent = asciiToHex(elAsciiInput.value||''); });
       elUseAscii.addEventListener('change', function(){ elAsciiBox.style.display = elUseAscii.checked ? 'block' : 'none'; });
 
-      // Render empty pools summary initially
+      // Pools summary initial state
       renderPoolsSummary();
     })();
   </script>
