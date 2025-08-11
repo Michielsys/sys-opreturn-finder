@@ -39,12 +39,24 @@
     .poolCard .logo img{max-width:30px;max-height:30px}
     .kpi{display:flex;gap:10px;align-items:center}
     .kpi .dot{width:8px;height:8px;border-radius:999px;background:var(--accent)}
+    /* Header branding */
+    .brand{display:flex;align-items:center;gap:12px}
+    .brandTitle{font-size:20px;font-weight:700}
+    .brandLogos{display:flex;align-items:center;gap:8px;margin-left:10px}
+    .brandLogos img{width:28px;height:28px;border-radius:6px;background:#0f1116;padding:4px;border:1px solid var(--line)}
+    .gifCard img{width:100%;height:auto;border-radius:12px;border:1px solid var(--line);display:block}
   </style>
 </head>
 <body>
   <header>
     <div class="wrap row">
-      <div style="font-size:20px;font-weight:700">Syscoin OP_RETURN Block Finder</div>
+      <div class="brand">
+        <div class="brandTitle">Syscoin OP_RETURN Block Finder</div>
+        <div class="brandLogos" title="Bitcoin & Syscoin">
+          <img src="https://cryptologos.cc/logos/bitcoin-btc-logo.svg?v=029" alt="Bitcoin logo" loading="lazy"/>
+          <img src="https://cryptologos.cc/logos/syscoin-sys-logo.svg?v=029" alt="Syscoin logo" loading="lazy"/>
+        </div>
+      </div>
       <div class="row" style="margin-left:auto;gap:16px">
         <div class="muted kpi"><span class="dot"></span>API: <span id="apiBase" class="badge">–</span></div>
         <div class="muted">Syscoin Hashrate: <span id="hashrate">–</span></div>
@@ -87,6 +99,17 @@
         <div class="muted" style="font-size:12px">Detected via mempool extras / coinbase tags / payout addresses</div>
       </div>
       <div id="poolsBox" class="pools" style="margin-top:10px"></div>
+    </section>
+
+    <!-- Fun / GIF section -->
+    <section class="card gifCard" aria-label="Satoshi shrug gif">
+      <div class="row wrap" style="justify-content:space-between">
+        <h3 style="margin:0">Meanwhile…</h3>
+        <div class="muted" style="font-size:12px">(Put <code>satoshi-bitcoin.gif</code> next to <code>index.html</code> or in <code>/public</code> on Vercel)</div>
+      </div>
+      <div style="margin-top:10px">
+        <img src="./satoshi-bitcoin.gif" alt="Satoshi shrugging gif" loading="lazy"/>
+      </div>
     </section>
 
     <section id="list" class="grid" style="grid-template-columns:1fr;gap:10px;margin-top:16px"></section>
